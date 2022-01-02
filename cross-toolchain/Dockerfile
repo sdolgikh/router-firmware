@@ -17,11 +17,12 @@ RUN cd /tmp && \
     git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git --depth 1 \
               -b linux-5.15.y kernel && \
     cd /tmp/kernel && git apply /tmp/nanopi-r4s.patch && \
-    make ARCH=$CLFS_ARCH INSTALL_HDR_PATH=/os/toolchain/$CLFS_TARGET headers_install
+    make ARCH=$CLFS_ARCH INSTALL_HDR_PATH=/os/toolchain/$CLFS_TARGET headers_install && \
+    rm -rf /tmp/kernel
 
 RUN cd /os/work && \
     wget https://mirror.yandex.ru/mirrors/gnu/binutils/binutils-2.37.tar.xz && \
-    tar -xf /tmp/binutils-2.37.tar.xz && rm -rf /tmp/binutils-2.37.tar.xz && \
+    tar -xf /os/work/binutils-2.37.tar.xz && rm -rf /os/work/binutils-2.37.tar.xz && \
     mkdir /os/work/binutils-build && cd /os/work/binutils-build && \
     ../binutils-2.37/configure \
 	--prefix=/os/toolchain \
