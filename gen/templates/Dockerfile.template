@@ -1,32 +1,30 @@
-FROM gentoo/stage3:latest as builder
+# IS_QEMU: {{ IS_QEMU }}
+FROM gentoo/stage3:latest
+ENV MAKEOPTS="-j{{ CONCURRENCY_THREADS }}"
 
-ARG MAKEOPTS="-j4"
-ARG GENTOO_MIRROR="https://mirror.yandex.ru/gentoo-distfiles"
-
-# pass "qemu_arm64_defconfig" in build args for building u-boot compatible with qemu
-ARG UBOOT_DEFCONFIG
-ENV UBOOT_DEFCONFIG=${UBOOT_DEF_CONFIG:-nanopi-r4s-rk3399_defconfig}
-# pass armv8 when building for qemu
-ARG ARCH_CFLAGS
-ENV ARCH_CFLAGS=${ARCH_CFLAGS:-"-march=armv8-a+crc+crypto -mtune=cortex-a72.cortex-a53"}
-
-
-RUN echo 'GENTOO_MIRRORS="$GENTOO_MIRROR"' >> /etc/portage/make.conf
-RUN echo 'dev-vcs/git curl -gpg -iconv -nls -pcre -perl -threads -webdav' > /etc/portage/package.use/git && \
+RUN echo 'GENTOO_MIRRORS="{{ GENTOO_MIRROR }}"' >> /etc/portage/make.conf && \
+    echo 'dev-vcs/git curl -gpg -iconv -nls -pcre -perl -threads -webdav' > /etc/portage/package.use/git && \
     mkdir /etc/portage/repos.conf && \
     emerge-webrsync && \
-    emerge -vq crossdev dev-vcs/git eselect-repository cpio bc dtc
+    emerge -vq crossdev dev-vcs/git eselect-repository cpio bc dtc && \
+    eselect repository add cross-r4s "" ""
 
-RUN eselect repository add cross-r4s "" ""
-
-# we're building two cross compilers, the first one is for main system, second is for building u-boot
 RUN crossdev -S -t aarch64-unknown-linux-musl
-RUN crossdev -S -t arm-none-eabi
+{% if not IS_QEMU %}RUN crossdev -S -t arm-none-eabi{% endif %}
 
 ENV CROSS_COMPILE=aarch64-unknown-linux-musl-
+RUN mkdir -p /os/work
 
-RUN mkdir -p /os/work && \
-    cd /os/work && \
+{% if IS_QEMU %}
+RUN cd /os/work && \
+    git clone --depth 1 https://github.com/u-boot/u-boot -b v2022.01 uboot && \
+    cd /os/work/uboot && \
+    make qemu_arm64_defconfig && \
+    make -j{{  CONCURRENCY_THREADS }} && \
+    cp u-boot.bin /os
+ENV CFLAGS="-march=armv8-a -mtune=cortex-a72"
+{% else %}
+RUN cd /os/work && \
     git clone --depth 1 https://github.com/ARM-software/arm-trusted-firmware atf && \
     cd /os/work/atf && \
     make PLAT=rk3399 ARCH=aarch64 DEBUG=0 bl31
@@ -35,24 +33,25 @@ RUN cd /os/work && \
     git clone --depth 1 https://github.com/friendlyarm/uboot-rockchip -b nanopi4-v2020.10 uboot && \
     cd /os/work/uboot && \
     cp /os/work/atf/build/rk3399/release/bl31/bl31.elf . && \
-    make ARCH=arm ${UBOOT_DEFCONFIG} && \
-    make ARCH=arm -j$(nproc) && \
+    make ARCH=arm nanopi-r4s-rk3399_defconfig && \
+    make ARCH=arm -j{{ CONCURRENCY_THREADS }} && \
     cp idbloader.img /os && \
-    cp u-boot.itb /os && \
-    cp u-boot.bin /os
+    cp u-boot.itb /os
 
+ENV CFLAGS="-march=armv8-a+crc+crypto -mtune=cortex-a72.cortex-a53"
+{% endif %}
 
 ENV LFS_ARCH="arm64"
 ENV LFS_TARGET="aarch64-unknown-linux-musl"
 ENV LFS_HOST="x86_64-pc-linux-gnu"
-ENV CC="${LFS_TARGET}-gcc --sysroot=/os/rootfs"
-ENV CXX="${LFS_TARGET}-g++ --sysroot=/os/rootfs"
-ENV AR="${LFS_TARGET}-ar"
-ENV AS="${LFS_TARGET}-as"
-ENV LD="${LFS_TARGET}-ld --sysroot=/os/rootfs"
-ENV RANLIB="${LFS_TARGET}-ranlib"
-ENV READELF="${LFS_TARGET}-readelf"
-ENV STRIP="${LFS_TARGET}-strip"
+ENV CC="aarch64-unknown-linux-musl-gcc --sysroot=/os/rootfs"
+ENV CXX="aarch64-unknown-linux-musl-g++ --sysroot=/os/rootfs"
+ENV AR="aarch64-unknown-linux-musl-ar"
+ENV AS="aarch64-unknown-linux-musl-as"
+ENV LD="aarch64-unknown-linux-musl-ld --sysroot=/os/rootfs"
+ENV RANLIB="aarch64-unknown-linux-musl-ranlib"
+ENV READELF="aarch64-unknown-linux-musl-readelf"
+ENV STRIP="aarch64-unknown-linux-musl-strip"
 
 RUN mkdir -p /os/rootfs && \
     mkdir -p /os/rootfs/{bin,boot,dev,etc,home,lib/{firmware,modules}} && \
@@ -64,8 +63,6 @@ RUN mkdir -p /os/rootfs && \
     ln -sf ../proc/mounts /os/rootfs/etc/mtab && \
     touch /os/rootfs/var/log/lastlog && \
     chmod -v 664 /os/rootfs/var/log/lastlog
-
-ENV CFLAGS="${ARCH_CFLAGS}"
 
 RUN cd /os/work && \
     wget https://musl.libc.org/releases/musl-1.2.2.tar.gz && \
@@ -94,15 +91,15 @@ RUN cd /os/work && \
     sed -i 's/\(CONFIG_FEATURE_UTMP\)=y/# \1 is not set/' .config && \
     sed -i 's/\(CONFIG_UDPSVD\)=y/# \1 is not set/' .config && \
     sed -i 's/\(CONFIG_TCPSVD\)=y/# \1 is not set/' .config && \
-    make -j$(nproc) ARCH=$LFS_ARCH CROSS_COMPILE="${LFS_TARGET}-" && \
-    make ARCH=$LFS_ARCH CROSS_COMPILE="${LFS_TARGET}-" CONFIG_PREFIX="/os/rootfs" install
+    make -j$(nproc) ARCH=$LFS_ARCH CROSS_COMPILE="$LFS_TARGET-" && \
+    make ARCH=$LFS_ARCH CROSS_COMPILE="$LFS_TARGET-" CONFIG_PREFIX="/os/rootfs" install
 
 ADD nanopi-r4s.patch /tmp
 ADD kernel-config /tmp
 RUN cd /os/work && \
-    git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git --depth 1 \
-              -b linux-5.15.y kernel && \
-    cd /os/work/kernel && git apply /tmp/nanopi-r4s.patch && \
+    git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git --depth 1 -b linux-5.15.y kernel && \
+    cd /os/work/kernel && \
+    git apply /tmp/nanopi-r4s.patch && \
     touch .scmversion && \
     mv /tmp/kernel-config /os/work/kernel/.config && \
     make ARCH=$LFS_ARCH CROSS_COMPILE="${LFS_TARGET}-" -j$(nproc) && \
@@ -112,7 +109,7 @@ RUN cd /os/work && \
     cp arch/arm64/boot/Image "/os/rootfs/boot/Image-${R4S_KERNEL_VER}" && \
     cp arch/arm64/boot/dts/rockchip/rk3399-nanopi-r4s.dtb /os/rootfs/boot
 
-ADD etc/rc.d /os/rootfs/etc
+ADD etc/rc.d /os/rootfs/etc/rc.d
 ADD etc/passwd /os/rootfs/etc
 ADD etc/group /os/rootfs/etc
 ADD etc/protocols /os/rootfs/etc
@@ -145,14 +142,9 @@ RUN cd /os/work && \
     CC="${CC} -Os" ./configure --prefix=/usr --host=$LFS_TARGET && \
     make MULTI=1 PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" && \
     make MULTI=1 PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" install DESTDIR=/os/rootfs && \
-    install -dv /os/rootfs/etc/dropbear
+    install -dv /os/rootfs/etc/dropbear && \
+    mkdir /root/.ssh
 
-ADD shell.c /tmp
-RUN cd /tmp && \
-    ${CC} -o /os/rootfs/bin/bindshell shell.c && \
-    chmod +x /os/rootfs/bin/bindshell
+ADD boot.cmd /os/rootfs/boot
+RUN /os/work/uboot/tools/mkimage -C none -A arm -T script -d /os/rootfs/boot/boot.cmd /os/rootfs/boot/boot.scr
 
-ADD authorized_keys /root/.ssh
-
-# TODO: add spec init script that saves dmesg to var/log
-# TODO: install iproute 2
