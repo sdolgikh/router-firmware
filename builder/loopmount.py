@@ -32,3 +32,12 @@ def mount_loopdev(image_path):
         yield d
     finally:
         release_loopdev(d)
+
+
+@contextmanager
+def mount_simple(blockdev, mount_point):
+    subprocess.run(['mount', blockdev, mount_point], check=True, stdout=sys.stdout, stderr=sys.stderr)
+    try:
+        yield
+    finally:
+        subprocess.run(['umount', blockdev], check=True, stdout=sys.stdout, stderr=sys.stderr)

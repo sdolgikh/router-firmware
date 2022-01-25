@@ -37,6 +37,8 @@ class BuilderMultistep:
     def partition_device(self, dev):
         if not dev.startswith('/dev/loop'):
             raise RuntimeError('trying to parted on non-loop partition, dangerous and unexpected!')
+        subprocess.run(['dd', 'if=/dev/zero', 'of=%s' % dev, 'bs=1M', 'count=16'], check=True, stdout=sys.stdout,
+                       stderr=sys.stderr)
         parted_script = ([
             'mklabel gpt',
             'unit mib mkpart primary 16 128',
@@ -55,25 +57,41 @@ class BuilderMultistep:
                         '%sp2' % dev], check=True, capture_output=True)
 
     def upload_firmware_to_device(self, blockdev):
-        subprocess.run(['dd', 'if=/dev/zero', 'of=%s' % blockdev, 'bs=1M', 'count=16'], check=True, stdout=sys.stdout,
-                       stderr=sys.stderr)
-        self.save_bootloader_images()
-        self.export_rootfs()
+        if not blockdev.startswith('/dev/loop'):
+            raise RuntimeError('trying to direct write to non-loop partition, dangerous and unexpected!')
+        self.save_bootloader_images(blockdev)
+        self.export_rootfs(blockdev)
 
-    def save_bootloader_images(self):
+    def save_bootloader_images(self, blockdev):
         for fname in ['idbloader.img', 'u-boot.itb']:
             out_path = os.path.join(self.build_dir, fname)
             with open(out_path, 'wb') as f:
                 cmd = ['docker', 'run', '--rm', self.image_name, 'cat', '/os/%s' % fname]
                 subprocess.run(cmd, stdout=f, check=True, stderr=sys.stderr)
+            seek = 64 if fname == 'idbloader.img' else 16384
+            cmd = ['dd', 'if=%s' % out_path, 'of=%s' % blockdev, 'seek=%s' % seek, 'conv=notrunc']
+            print(' '.join(cmd))
+            subprocess.run(cmd, check=True, stdout=sys.stdout, stderr=sys.stderr)
 
-    def export_rootfs(self):
-        # docker run --rm r4s:latest tar cj --xattrs-include='*.*' --numeric-owner -C /os/rootfs ./
+    def export_rootfs(self, blockdev):
         cmd = ['docker', 'run', '--rm', 'r4s:latest', 'tar', 'cj', "--xattrs-include='*.*'", '--numeric-owner',
                '-C', '/os/rootfs', './']
-        out_path = os.path.join(self.build_dir, 'rootfs.tar.bz2')
-        with open(out_path, 'wb') as f:
+        rootfs_tarball_path = os.path.join(self.build_dir, 'rootfs.tar.bz2')
+        with open(rootfs_tarball_path, 'wb') as f:
             subprocess.run(cmd, stdout=f, check=True, stderr=sys.stderr)
+        mnt_workdir = os.path.join(self.build_dir, 'mnt')
+        if not os.path.exists(mnt_workdir):
+            os.makedirs(mnt_workdir)
+        rootfs_dev = '%sp2' % blockdev
+        with builder.loopmount.mount_simple(rootfs_dev, mnt_workdir):
+            pwd = os.getcwd()
+            os.chdir(mnt_workdir)
+            cmd = ['tar', 'xpf', rootfs_tarball_path, "--xattrs-include='*.*'", '--numeric-owner',
+                   '-C', mnt_workdir]
+            print(' '.join(cmd))
+            subprocess.run(cmd, check=True, stderr=sys.stderr, stdout=sys.stdout)
+            os.chdir(pwd)
+            # TODO: create_fstab
 
     def build(self):
         print('generating dockerfile...')
@@ -87,6 +105,7 @@ class BuilderMultistep:
         with builder.loopmount.mount_loopdev(image_path) as blockdev:
             print('partitioning image %s' % blockdev)
             self.partition_device(blockdev)
-            
             self.upload_firmware_to_device(blockdev)
+            input('press any key')
+
 
