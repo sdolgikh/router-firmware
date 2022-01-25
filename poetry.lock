@@ -1,4 +1,12 @@
 [[package]]
+name = "fallocate"
+version = "1.6.4"
+description = "Module to expose posix_fallocate(3), posix_fadvise(3) and fallocate(2)"
+category = "main"
+optional = false
+python-versions = "*"
+
+[[package]]
 name = "jinja2"
 version = "3.0.0"
 description = "A very fast and expressive template engine."
@@ -23,9 +31,12 @@ python-versions = ">=3.6"
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.10"
-content-hash = "ea209d89c92d2c598534349d45a8eb89ec668132c1d940e60ae5daa33c2bdd63"
+content-hash = "b52bb68dbf43719c462a9388ef65cba0957d6f93565a15272a3a11ecdbac9978"
 
 [metadata.files]
+fallocate = [
+    {file = "fallocate-1.6.4.tar.gz", hash = "sha256:85ebeb2786761fbe80d88c52590a610bd3425fc89e188c208a3f261a5bd6acb3"},
+]
 jinja2 = [
     {file = "Jinja2-3.0.0-py3-none-any.whl", hash = "sha256:2f2de5285cf37f33d33ecd4a9080b75c87cd0c1994d5a9c6df17131ea1f049c6"},
     {file = "Jinja2-3.0.0.tar.gz", hash = "sha256:ea8d7dd814ce9df6de6a761ec7f1cac98afe305b8cdc4aaae4e114b8d8ce24c5"},

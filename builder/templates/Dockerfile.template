@@ -104,6 +104,7 @@ RUN cd /os/work && \
     mv /tmp/kernel-config /os/work/kernel/.config && \
     make ARCH=$LFS_ARCH CROSS_COMPILE="${LFS_TARGET}-" -j$(nproc) && \
     make ARCH=$LFS_ARCH CROSS_COMPILE="${LFS_TARGET}-" INSTALL_MOD_PATH=/os/rootfs INSTALL_MOD_STRIP=1 modules_install && \
+    make ARCH=$LFS_ARCH CROSS_COMPILE="${LFS_TARGET}-" INSTALL_HDR_PATH=/os/rootfs/usr headers_install && \
     export R4S_KERNEL_VER=`make kernelrelease` && \
     cp .config "/os/rootfs/boot/config-${R4S_KERNEL_VER}" && \
     cp arch/arm64/boot/Image "/os/rootfs/boot/Image-${R4S_KERNEL_VER}" && \
@@ -147,4 +148,108 @@ RUN cd /os/work && \
 
 ADD boot.cmd /os/rootfs/boot
 RUN /os/work/uboot/tools/mkimage -C none -A arm -T script -d /os/rootfs/boot/boot.cmd /os/rootfs/boot/boot.scr
+
+# TODO: возможно придется еще поправить CC=gcc в config.mk
+
+# TODO: install libmnl из netfilter
+# TODO: install libnftnl из netfilter
+# TODO: install libgmp
+# TODO: install readline
+
+RUN sed -i 's/unset EXTRA_PKG_CONFIG/#unset EXTRA_PKG_CONFIG/g' /usr/bin/cross-pkg-config
+{# #ENV EXTRA_PKG_CONFIG_LIBDIR=/os/rootfs/usr/lib/pkgconfig #}
+
+RUN cd /os/work && \
+    wget https://mirror.yandex.ru/mirrors/gnu/ncurses/ncurses-6.3.tar.gz && \
+    tar -xf /os/work/ncurses-6.3.tar.gz && \
+    cd /os/work/ncurses-6.3 && \
+    ./configure --prefix=/usr --host=$LFS_TARGET --with-shared --with-pkg-config \
+        --enable-pc-files --enable-shared --without-progs \
+        --disable-widec --enable-termcap --enable-getcap && \
+    make -j{{  CONCURRENCY_THREADS }} && \
+    make DESTDIR=/usr/aarch64-unknown-linux-musl install && \
+    cp /usr/${LFS_TARGET}/usr/lib/*curs* /os/rootfs/usr/lib && \
+    cp /usr/${LFS_TARGET}/usr/lib/libform* /os/rootfs/usr/lib && \
+    cp /usr/${LFS_TARGET}/usr/lib/libmenu* /os/rootfs/usr/lib && \
+    cp /usr/${LFS_TARGET}/usr/lib/libpanel* /os/rootfs/usr/lib
+
+RUN cd /os/work && \
+    wget https://www.netfilter.org/pub/libmnl/libmnl-1.0.4.tar.bz2 && \
+    tar -xf libmnl-1.0.4.tar.bz2 && \
+    cd /os/work/libmnl-1.0.4 && \
+    ./configure --prefix=/usr --host=$LFS_TARGET && \
+    make -j{{ CONCURRENCY_THREADS }} && \
+    make DESTDIR=/usr/aarch64-unknown-linux-musl install && \
+    cp /usr/aarch64-unknown-linux-musl/usr/lib/libmnl* /os/rootfs/usr/lib
+
+RUN cd /os/work && \
+    wget https://www.netfilter.org/pub/libnftnl/libnftnl-1.2.1.tar.bz2 && \
+    tar -xf /os/work/libnftnl-1.2.1.tar.bz2 && \
+    cd /os/work/libnftnl-1.2.1 && \
+     ./configure --prefix=/usr --host=$LFS_TARGET && \
+    make -j{{ CONCURRENCY_THREADS }} && \
+    make DESTDIR=/usr/aarch64-unknown-linux-musl install && \
+    cp /usr/aarch64-unknown-linux-musl/usr/lib/libnftnl* /os/rootfs/usr/lib
+
+RUN cd /os/work && \
+    wget https://mirror.yandex.ru/mirrors/gnu/gmp/gmp-6.2.1.tar.xz && \
+    tar -xf /os/work/gmp-6.2.1.tar.xz && \
+    cd /os/work/gmp-6.2.1 && \
+    ./configure --prefix=/usr --host=$LFS_TARGET && \
+    make -j{{ CONCURRENCY_THREADS }} && \
+    make DESTDIR=/usr/${LFS_TARGET} install && \
+    cp /usr/${LFS_TARGET}/usr/lib/libgmp* /os/rootfs/usr/lib
+
+RUN cd /os/work && \
+    wget https://mirror.yandex.ru/mirrors/gnu/readline/readline-8.1.2.tar.gz && \
+    tar -xf /os/work/readline-8.1.2.tar.gz && \
+    cd /os/work/readline-8.1.2 && \
+    ./configure --prefix=/usr --host=$LFS_TARGET --with-curses && \
+    make -j{{ CONCURRENCY_THREADS }} && \
+    make DESTDIR=/usr/${LFS_TARGET} install && \
+    cp -v /usr/${LFS_TARGET}/usr/lib/lib{history,readline}* /os/rootfs/usr/lib
+
+{# RUN cd /os/work && \
+    wget https://thrysoee.dk/editline/libedit-20210910-3.1.tar.gz && \
+    tar -xf /os/work/libedit-20210910-3.1.tar.gz && \
+    cd /os/work/libedit-20210910-3.1 && \
+    CFLAGS="${CFLAGS} -I/usr/${LFS_TARGET}/usr/include" ./configure --prefix=/usr --host=$LFS_TARGET && \
+    make -j{{  CONCURRENCY_THREADS }} && \
+    make DESTDIR=/usr/${LFS_TARGET} install && \
+    cp -v /usr/${LFS_TARGET}/usr/lib/libedit* /os/rootfs/usr/lib
+#}
+
+RUN cd /os/work && \
+    wget https://www.netfilter.org/pub/nftables/nftables-1.0.1.tar.bz2 && \
+    tar -xf /os/work/nftables-1.0.1.tar.bz2 && \
+    cd /os/work/nftables-1.0.1 && \
+    rm -rf /usr/$LFS_TARGET/usr/lib/*.la && \
+    LDFLAGS="${LDFLAGS} -lncurses" \
+    ./configure --prefix=/ --host=$LFS_TARGET --with-cli=readline --disable-man-doc --disable-python && \
+    make -j{{ CONCURRENCY_THREADS }} && \
+    make DESTDIR=/usr/$LFS_TARGET install && \
+    cp -v /usr/$LFS_TARGET/lib/libnftables.{a,so,so.1,so.1.1.0} /os/rootfs/lib && \
+    cp -v /usr/$LFS_TARGET/sbin/nft /os/rootfs/sbin && \
+    cp -rv /usr/$LFS_TARGET/etc/nftables /os/rootfs/etc && \
+    cp -rv /usr/$LFS_TARGET/share/nftables /os/rootfs/usr/share && \
+    cp -rv /usr/$LFS_TARGET/include/nftables /os/rootfs/usr/include
+
+
+RUN cd /os/work && \
+    git clone --depth 1 https://github.com/shemminger/iproute2 -b v5.16.0 iproute2 && \
+    cd /os/work/iproute2 && \
+    sed -i /ARPD/d Makefile && \
+    rm -fv man/man8/arpd.8 && \
+    sed -i 's/.m_ipt.o//' tc/Makefile && \
+    sed -i 's/:= gcc/?= gcc/g' Makefile && \
+    sed -i 's/netax25/linux/g' lib/ax25_ntop.c && \
+    ./configure --prefix=/usr && \
+    sed -i 's/HAVE_CAP:=y/HAVE_CAP:=n/g' config.mk && \
+    sed -i 's~IPT_LIB_DIR:=/usr/lib64/xtables~TC_CONFIG_NO_XT:=y~g' config.mk && \
+    sed -i 's/CFLAGS += -DHAVE_LIBCAP//g' config.mk && \
+    sed -i 's/LDLIBS += -lcap//g' config.mk && \
+    sed -i 's/\$(MAKE)/\$(MAKE) CC="\$(CC)" LD="\$(LD)" \$(MFLAGS)/g' Makefile && \
+    cp -rv /usr/aarch64-unknown-linux-musl/usr/include/libmnl /os/rootfs/usr/include/ && \
+    HOSTCC=gcc make -j{{ CONCURRENCY_THREADS }} && \
+    make DESTDIR=/os/rootfs install
 

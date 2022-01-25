@@ -112,6 +112,7 @@ RUN cd /os/work && \
     cp arch/arm64/boot/Image "/os/rootfs/boot/Image-${R4S_KERNEL_VER}" && \
     cp arch/arm64/boot/dts/rockchip/rk3399-nanopi-r4s.dtb /os/rootfs/boot
 
+
 ADD etc/rc.d /os/rootfs/etc
 ADD etc/passwd /os/rootfs/etc
 ADD etc/group /os/rootfs/etc
