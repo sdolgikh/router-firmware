@@ -55,7 +55,8 @@ ENV STRIP="aarch64-unknown-linux-musl-strip"
 
 RUN mkdir -p /os/rootfs && \
     mkdir -p /os/rootfs/{bin,boot,dev,etc,home,lib/{firmware,modules}} && \
-    mkdir -p /os/rootfs/{mnt,opt,proc,sbin,srv,sys} && \
+    mkdir -p /os/rootfs/{mnt,opt,proc,srv,sys,usr/bin} && \
+    cd /os/rootfs && ln -vs ./sbin ./usr/bin && \
     mkdir -p /os/rootfs/var/{cache,lib,local,lock,log,opt,run,spool} && \
     install -dv -m 0750 /os/rootfs/root && \
     install -dv -m 1777 /os/rootfs/{var/,}tmp && \
@@ -80,35 +81,32 @@ RUN cd /os/work && \
     rm -rf /tmp/work/musl-1.2.2 && \
     rm -rf /tmp/work/musl-1.2.2.tar.gz
 
+# make ARCH=$LFS_ARCH defconfig && \
+
+ADD busybox-config /tmp
 RUN cd /os/work && \
     wget https://busybox.net/downloads/busybox-1.35.0.tar.bz2 && \
     tar -xf busybox-1.35.0.tar.bz2 && \
     cd /os/work/busybox-1.35.0 && \
-    make ARCH=$LFS_ARCH defconfig && \
-    sed -i 's/\(CONFIG_\)\(.*\)\(INETD\)\(.*\)=y/# \1\2\3\4 is not set/g' .config && \
-    sed -i 's/\(CONFIG_IFPLUGD\)=y/# \1 is not set/' .config && \
-    sed -i 's/\(CONFIG_FEATURE_WTMP\)=y/# \1 is not set/' .config && \
-    sed -i 's/\(CONFIG_FEATURE_UTMP\)=y/# \1 is not set/' .config && \
-    sed -i 's/\(CONFIG_UDPSVD\)=y/# \1 is not set/' .config && \
-    sed -i 's/\(CONFIG_TCPSVD\)=y/# \1 is not set/' .config && \
+    cp /tmp/busybox-config .config && \
     make -j$(nproc) ARCH=$LFS_ARCH CROSS_COMPILE="$LFS_TARGET-" && \
     make ARCH=$LFS_ARCH CROSS_COMPILE="$LFS_TARGET-" CONFIG_PREFIX="/os/rootfs" install
 
 ADD nanopi-r4s.patch /tmp
-ADD kernel-config /tmp
+ADD kernel-config-new /tmp
 RUN cd /os/work && \
-    git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git --depth 1 -b linux-5.15.y kernel && \
+    git clone https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux.git --depth 1 -b linux-5.15.y kernel && \
     cd /os/work/kernel && \
     git apply /tmp/nanopi-r4s.patch && \
     touch .scmversion && \
-    mv /tmp/kernel-config /os/work/kernel/.config && \
+    mv /tmp/kernel-config-new /os/work/kernel/.config && \
     make ARCH=$LFS_ARCH CROSS_COMPILE="${LFS_TARGET}-" -j$(nproc) && \
     make ARCH=$LFS_ARCH CROSS_COMPILE="${LFS_TARGET}-" INSTALL_MOD_PATH=/os/rootfs INSTALL_MOD_STRIP=1 modules_install && \
     make ARCH=$LFS_ARCH CROSS_COMPILE="${LFS_TARGET}-" INSTALL_HDR_PATH=/os/rootfs/usr headers_install && \
     export R4S_KERNEL_VER=`make kernelrelease` && \
     cp .config "/os/rootfs/boot/config-${R4S_KERNEL_VER}" && \
-    cp arch/arm64/boot/Image "/os/rootfs/boot/Image-${R4S_KERNEL_VER}" && \
-    cp arch/arm64/boot/dts/rockchip/rk3399-nanopi-r4s.dtb /os/rootfs/boot
+    cp arch/arm64/boot/Image "/os/rootfs/boot/Image-${R4S_KERNEL_VER}" {% if not IS_QEMU %}&& \
+    cp arch/arm64/boot/dts/rockchip/rk3399-nanopi-r4s.dtb /os/rootfs/boot {% endif %}
 
 ADD etc/rc.d /os/rootfs/etc/rc.d
 ADD etc/passwd /os/rootfs/etc
@@ -120,11 +118,20 @@ ADD etc/profile /os/rootfs/etc
 ADD etc/inittab /os/rootfs/etc
 ADD etc/hosts /os/rootfs/etc
 RUN echo 'r4s' > /os/rootfs/etc/hostname
-RUN mkdir -pv /os/rootfs/etc/network/if-{post-{up,down},pre-{up,down},up,down}.d && \
+RUN mkdir -pv /os/rootfs/etc/rc.d/{start,stop} && \
+    mkdir -pv /os/rootfs/etc/network/if-{post-{up,down},pre-{up,down},up,down}.d && \
     mkdir -pv /os/rootfs/usr/share/udhcpc
 ADD etc/network/interfaces /os/rootfs/etc/network
 ADD udhcpc-default-script /os/rootfs/usr/share/udhcpc/default.script
-RUN chmod +x /os/rootfs/usr/share/udhcpc/default.script
+RUN chmod +x /os/rootfs/usr/share/udhcpc/default.script && \
+    cd /os/rootfs/etc/rc.d/start && \
+        ln -sf ../init.d/syslog S05syslog && \
+        ln -sf ../init.d/sshd S30sshd && \
+        ln -sf ../init.d/netplugd S10netplugd && \
+    cd /os/rootfs/etc/rc.d/stop && \
+        ln -sf ../init.d/syslog K99syslog && \
+        ln -sf ../init.d/sshd K30sshd && \
+        ln -sf ../init.d/netplugd K90netplugd
 
 RUN cd /os/work && \
     wget https://zlib.net/zlib-1.2.11.tar.gz && \
@@ -146,18 +153,7 @@ RUN cd /os/work && \
     install -dv /os/rootfs/etc/dropbear && \
     mkdir /root/.ssh
 
-ADD boot.cmd /os/rootfs/boot
-RUN /os/work/uboot/tools/mkimage -C none -A arm -T script -d /os/rootfs/boot/boot.cmd /os/rootfs/boot/boot.scr
-
-# TODO: возможно придется еще поправить CC=gcc в config.mk
-
-# TODO: install libmnl из netfilter
-# TODO: install libnftnl из netfilter
-# TODO: install libgmp
-# TODO: install readline
-
 RUN sed -i 's/unset EXTRA_PKG_CONFIG/#unset EXTRA_PKG_CONFIG/g' /usr/bin/cross-pkg-config
-{# #ENV EXTRA_PKG_CONFIG_LIBDIR=/os/rootfs/usr/lib/pkgconfig #}
 
 RUN cd /os/work && \
     wget https://mirror.yandex.ru/mirrors/gnu/ncurses/ncurses-6.3.tar.gz && \
@@ -209,16 +205,6 @@ RUN cd /os/work && \
     make DESTDIR=/usr/${LFS_TARGET} install && \
     cp -v /usr/${LFS_TARGET}/usr/lib/lib{history,readline}* /os/rootfs/usr/lib
 
-{# RUN cd /os/work && \
-    wget https://thrysoee.dk/editline/libedit-20210910-3.1.tar.gz && \
-    tar -xf /os/work/libedit-20210910-3.1.tar.gz && \
-    cd /os/work/libedit-20210910-3.1 && \
-    CFLAGS="${CFLAGS} -I/usr/${LFS_TARGET}/usr/include" ./configure --prefix=/usr --host=$LFS_TARGET && \
-    make -j{{  CONCURRENCY_THREADS }} && \
-    make DESTDIR=/usr/${LFS_TARGET} install && \
-    cp -v /usr/${LFS_TARGET}/usr/lib/libedit* /os/rootfs/usr/lib
-#}
-
 RUN cd /os/work && \
     wget https://www.netfilter.org/pub/nftables/nftables-1.0.1.tar.bz2 && \
     tar -xf /os/work/nftables-1.0.1.tar.bz2 && \
@@ -234,7 +220,6 @@ RUN cd /os/work && \
     cp -rv /usr/$LFS_TARGET/share/nftables /os/rootfs/usr/share && \
     cp -rv /usr/$LFS_TARGET/include/nftables /os/rootfs/usr/include
 
-
 RUN cd /os/work && \
     git clone --depth 1 https://github.com/shemminger/iproute2 -b v5.16.0 iproute2 && \
     cd /os/work/iproute2 && \
@@ -249,7 +234,49 @@ RUN cd /os/work && \
     sed -i 's/CFLAGS += -DHAVE_LIBCAP//g' config.mk && \
     sed -i 's/LDLIBS += -lcap//g' config.mk && \
     sed -i 's/\$(MAKE)/\$(MAKE) CC="\$(CC)" LD="\$(LD)" \$(MFLAGS)/g' Makefile && \
-    cp -rv /usr/aarch64-unknown-linux-musl/usr/include/libmnl /os/rootfs/usr/include/ && \
+    cp -rv /usr/$LFS_TARGET/usr/include/libmnl /os/rootfs/usr/include/ && \
     HOSTCC=gcc make -j{{ CONCURRENCY_THREADS }} && \
     make DESTDIR=/os/rootfs install
 
+RUN cd /os/work && \
+    git clone https://git.kernel.org/pub/scm/fs/ext2/e2fsprogs.git -b v1.46.5 --depth 1 e2fsprogs && \
+    cd /os/work/e2fsprogs && \
+    CROSS_COMPILE="${LFS_TARGET}-" ./configure --prefix=/usr --host=$LFS_TARGET \
+                --enable-libuuid && \
+    make -j{{ CONCURRENCY_THREADS }} && \
+    cd /os/work/e2fsprogs/e2fsck && make DESTDIR=/os/rootfs install && \
+    cd /os/work/e2fsprogs && make DESTDIR=/usr/$LFS_TARGET install-libs
+
+RUN cd /os/work && \
+    git clone https://git.kernel.org/pub/scm/linux/kernel/git/jaegeuk/f2fs-tools.git --depth 1 -b v1.14.0 f2fs-tools && \
+    cd /os/work/f2fs-tools && \
+    ./autogen.sh && \
+    cp /var/db/repos/gentoo/sys-libs/queue-standalone/files/queue.h /usr/$LFS_TARGET/usr/include/sys && \
+    echo 'mkfs_f2fs_LDFLAGS = -all-static' >> mkfs/Makefile.am && \
+    echo 'fsck_f2fs_LDFLAGS = -all-static' >> fsck/Makefile.am && \
+    ./configure --prefix=/usr --host=$LFS_TARGET --without-selinux --without-blkid && \
+    make -j{{  CONCURRENCY_THREADS }} && \
+    cd /os/work/f2fs-tools/fsck && make DESTDIR=/os/rootfs install-exec
+
+
+{% if not IS_QEMU %}
+ADD boot.cmd /os/rootfs/boot
+{% else %}
+ADD qemu-boot.cmd /os/rootfs/boot/boot.cmd
+{% endif %}
+
+RUN /os/work/uboot/tools/mkimage -C none -A arm -T script -d /os/rootfs/boot/boot.cmd /os/rootfs/boot/boot.scr && \
+    cd /os/work/kernel && \
+    export R4S_KERNEL_VER=`make kernelrelease` && \
+    cd /os/rootfs/boot && \
+    ln -sf Image-${R4S_KERNEL_VER} Image
+
+# ADD dbgstub.c /tmp
+# RUN cd /tmp && \
+#     $CC -g -o /os/rootfs/bin/dbgstub dbgstub.c && \
+#     chmod a+x /os/rootfs/bin/dbgstub
+
+ADD authorized_keys /os/rootfs/etc/dropbear
+ADD etc/shells /os/rootfs/etc
+RUN chmod 0600 /os/rootfs/etc/dropbear && \
+    chmod 0644 /os/rootfs/etc/shells

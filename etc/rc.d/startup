@@ -12,62 +12,62 @@
 
 /bin/echo "/sbin/mdev" > /proc/sys/kernel/hotplug
 
-echo -n "Starting mdev: "
+echo -n "Starting mdev: " >> /dev/ttyprintk
 /sbin/mdev -s
 check_status
 
-echo -n "Mounting devpts: "
+echo -n "Mounting devpts: " >> /dev/ttyprintk
 /bin/mount -t devpts none /dev/pts
 check_status
 
-echo -n "Mounting shared memory: "
+echo -n "Mounting shared memory: " >> /dev/ttyprintk
 /bin/mount -t tmpfs none /dev/shm
 check_status
 
 if [ -x /sbin/hwclock ] && [ -e /dev/rtc0 ]; then
-	echo -n "Setting system clock: "
+	echo -n "Setting system clock: " >> /dev/ttyprintk
 	hwclock --hctosys --utc
 	check_status
 fi
 
 if [ -x /sbin/fsck ]; then
-	echo "Starting fsck for local filesystems."
+	echo "Starting fsck for local filesystems." >> /dev/ttyprintk
 	fsck -A -C -R -T -t nonfs,nosmbfs
 	if [ "$?" -gt 2 ]; then
-		echo "WARNING: Errors found while checking filesystems."
-		echo "You can login as root now, the system will reboot after logout."
+		echo "WARNING: Errors found while checking filesystems." >> /dev/ttyprintk
+		echo "You can login as root now, the system will reboot after logout." >> /dev/ttyprintk
 		sulogin
 		reboot
 	elif [ "$?" = "2" ]; then
-		echo "NOTICE: System needs to be rebooted now."
+		echo "NOTICE: System needs to be rebooted now." >> /dev/ttyprintk
 		sleep 1
 		reboot
 	else
-		echo -n "Checking local filesystems: "
+		echo -n "Checking local filesystems: " >> /dev/ttyprintk
 		check_status
 	fi
 fi
 
 
 if [ -x /sbin/swapon ]; then
-	echo -n "Enabling swap space: "
+	echo -n "Enabling swap space: " >> /dev/ttyprintk
 	swapon -a
 	check_status
 fi
 
-echo -n "Remounting root rw: "
+echo -n "Remounting root rw: " >> /dev/ttyprintk
 mount -o remount,rw /
 check_status
 
-echo -n "Linking /var/tmp and /tmp: "
+echo -n "Linking /var/tmp and /tmp: " >> /dev/ttyprintk
 ln -s ../tmp /var/tmp
 check_status
 
-echo -n "Setting hostname: "
+echo -n "Setting hostname: " > /var/log/init_log
 hostname -F /etc/HOSTNAME
 check_status
 
-echo -n "Cleaning up system: "
+echo -n "Cleaning up system: " >> /var/log/init_log
 rm -rf /var/run/*
 > /var/run/utmp
 touch /var/log/wtmp
@@ -75,20 +75,32 @@ touch /var/log/messages
 chmod 0664 /var/run/utmp
 chmod 0664 /var/log/wtmp
 chmod 0660 /var/log/messages
+echo 'init trace 1' >> /var/log/init_log
 rm -rf /tmp/*
 check_status
 
-echo -n "Setting up interface lo: "
-ifconfig lo up 127.0.0.1
+echo 'init trace 2a' >> /var/log/init_log
+
+echo -n "Setting up interface lo: " >> /var/log/init_log
+ifconfig lo up 127.0.0.1 >> /var/log/init_log
 check_status
 
-echo "Running start scripts."
+echo "Running start scripts." >> /var/log/init_log
 
 for i in /etc/rc.d/start/*
 do
 	if [ -x $i ]; then
+	  echo "starting script $i" >> /var/log/init_log
 		$i start
 	fi
 done
+
+/sbin/ip link > /var/log/ip_link_output
+/sbin/ip addr > /var/log/ip_addr_output
+
+/sbin/ip link set up dev eth0
+/sbin/ip addr add 192.168.100.1/24 dev eth0
+
+echo 'Startup script finished ok' >> /var/log/init_log
 
 exit 0

@@ -63,35 +63,86 @@ class BuilderMultistep:
         self.export_rootfs(blockdev)
 
     def save_bootloader_images(self, blockdev):
-        for fname in ['idbloader.img', 'u-boot.itb']:
-            out_path = os.path.join(self.build_dir, fname)
+        if self.target != 'qemu':
+            for fname in ['idbloader.img', 'u-boot.itb']:
+                out_path = os.path.join(self.build_dir, fname)
+                with open(out_path, 'wb') as f:
+                    cmd = ['docker', 'run', '--rm', self.image_name, 'cat', '/os/%s' % fname]
+                    subprocess.run(cmd, stdout=f, check=True, stderr=sys.stderr)
+                seek = 64 if fname == 'idbloader.img' else 16384
+                cmd = ['dd', 'if=%s' % out_path, 'of=%s' % blockdev, 'seek=%s' % seek, 'conv=notrunc']
+                print(' '.join(cmd))
+                subprocess.run(cmd, check=True, stdout=sys.stdout, stderr=sys.stderr)
+        else:
+            out_path = os.path.join(self.build_dir, 'u-boot.bin')
             with open(out_path, 'wb') as f:
-                cmd = ['docker', 'run', '--rm', self.image_name, 'cat', '/os/%s' % fname]
+                cmd = ['docker', 'run', '--rm', self.image_name, 'cat', '/os/u-boot.bin']
                 subprocess.run(cmd, stdout=f, check=True, stderr=sys.stderr)
-            seek = 64 if fname == 'idbloader.img' else 16384
-            cmd = ['dd', 'if=%s' % out_path, 'of=%s' % blockdev, 'seek=%s' % seek, 'conv=notrunc']
-            print(' '.join(cmd))
-            subprocess.run(cmd, check=True, stdout=sys.stdout, stderr=sys.stderr)
+
+    def write_fstab(self, out_f, blockdev):
+        with subprocess.Popen(['blkid'], stdout=subprocess.PIPE, stderr=subprocess.PIPE) as p:
+            output, errors = p.communicate()
+            if p.returncode != 0:
+                print(errors)
+                raise RuntimeError('blkid failed')
+            output = output.decode('utf-8')
+            uuids = {}
+            print(output)
+            for row in output.split('\n'):
+                row = row.strip()
+                if not len(row):
+                    continue
+                cols = row.split()
+                dev_name = cols[0].rstrip(':')
+                uuid = None
+                for col in cols:
+                    if col.startswith('UUID'):
+                        uuid = col.split('"')[1]
+                if uuid is not None:
+                    uuids[dev_name] = uuid
+
+        rootfs_dev = '%sp2' % blockdev
+        bootfs_dev = '%sp1' % blockdev
+        out_f.write('UUID="%s"\t/\tf2fs\tdefaults,nobarrier,noatime,nodiratime,compress_algorithm=zstd,compress_extension=*\t0 1\n' % uuids[rootfs_dev])
+        out_f.write('UUID="%s"\t/boot\text4\tdefaults,noauto,noatime,nodiratime,commit=600,errors=remount-ro\t0 2\n' % uuids[bootfs_dev])
+        out_f.write('tmpfs\ttmp\ttmpfs\tdefaults,nosuid\n')
+
+    def export_vmlinux(self):
+        file_path = os.path.join(self.build_dir, 'vmlinux')
+        with open(file_path, 'wb') as f:
+            cmd = ['docker', 'run', '--rm', self.image_name, 'cat', '/os/work/kernel/vmlinux']
+            subprocess.run(cmd, stdout=f, stderr=sys.stderr, check=True)
 
     def export_rootfs(self, blockdev):
-        cmd = ['docker', 'run', '--rm', 'r4s:latest', 'tar', 'cj', "--xattrs-include='*.*'", '--numeric-owner',
+        # TODO: docker run --rm r4s-qemu:latest tar -cj -C /os/work/kernel ./ > kernel-src.tar.bz2
+        cmd = ['docker', 'run', '--rm', self.image_name, 'tar', 'cj', "--xattrs-include='*.*'", '--numeric-owner',
                '-C', '/os/rootfs', './']
         rootfs_tarball_path = os.path.join(self.build_dir, 'rootfs.tar.bz2')
         with open(rootfs_tarball_path, 'wb') as f:
             subprocess.run(cmd, stdout=f, check=True, stderr=sys.stderr)
-        mnt_workdir = os.path.join(self.build_dir, 'mnt')
-        if not os.path.exists(mnt_workdir):
-            os.makedirs(mnt_workdir)
+        mnt_workdir_root = os.path.join(self.build_dir, 'mnt')
+        mnt_workdir_boot = os.path.join(self.build_dir, 'mnt-boot')
+        if not os.path.exists(mnt_workdir_root):
+            os.makedirs(mnt_workdir_root)
+        if not os.path.exists(mnt_workdir_boot):
+            os.makedirs(mnt_workdir_boot)
         rootfs_dev = '%sp2' % blockdev
-        with builder.loopmount.mount_simple(rootfs_dev, mnt_workdir):
+        bootfs_dev = '%sp1' % blockdev
+        with builder.loopmount.mount_simple(rootfs_dev, mnt_workdir_root):
             pwd = os.getcwd()
-            os.chdir(mnt_workdir)
+            os.chdir(mnt_workdir_root)
             cmd = ['tar', 'xpf', rootfs_tarball_path, "--xattrs-include='*.*'", '--numeric-owner',
-                   '-C', mnt_workdir]
-            print(' '.join(cmd))
+                   '-C', mnt_workdir_root]
             subprocess.run(cmd, check=True, stderr=sys.stderr, stdout=sys.stdout)
             os.chdir(pwd)
-            # TODO: create_fstab
+            fstab_path = os.path.join(mnt_workdir_root, 'etc', 'fstab')
+            with open(fstab_path, 'w') as fstab_f:
+                self.write_fstab(fstab_f, blockdev)
+            with builder.loopmount.mount_simple(bootfs_dev, mnt_workdir_boot):
+                srcdir = os.path.join(mnt_workdir_root, 'boot', '.')
+                targetdir = os.path.join(mnt_workdir_boot)
+                cmd = ['rsync', '-av', srcdir, targetdir]
+                subprocess.run(cmd, check=True, stderr=sys.stderr, stdout=sys.stdout)
 
     def build(self):
         print('generating dockerfile...')
@@ -106,6 +157,4 @@ class BuilderMultistep:
             print('partitioning image %s' % blockdev)
             self.partition_device(blockdev)
             self.upload_firmware_to_device(blockdev)
-            input('press any key')
-
-
+            self.export_vmlinux()

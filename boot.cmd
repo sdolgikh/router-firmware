@@ -12,6 +12,8 @@ setenv bootargs "${rootargs} ${consoleargs} ${zswapargs}"
 
 echo "Boot script loaded from ${devtype} ${devnum}"
 
+# dhcp
+
 load mmc 1:1 ${kernel_addr_r} Image
 load mmc 1:1 ${fdt_addr_r} ${fdtfile}
 fdt addr ${fdt_addr_r}
